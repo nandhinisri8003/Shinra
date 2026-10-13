@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>naruto</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; overflow: hidden; background-color: black; font-family: system-ui, sans-serif; }
+
+    #v_src, #out {
+      position: absolute; top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      object-fit: cover; transform: scaleX(-1);
+    }
+    #out { z-index: 2; pointer-events: none; }
+    .darkness {
+      position: absolute; top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(10, 5, 0, 0.3);
+      mix-blend-mode: multiply; pointer-events: none; z-index: 5;
+    }
+    .fx {
+      position: absolute; height: auto; top: 0; left: 0;
+      transform: translate(-50%, -50%);
+      pointer-events: none; display: none;
+      mix-blend-mode: screen; z-index: 20;
+    }
+    #n { width: min(1600px, 140vw); }
+    #s { width: min(2400px, 180vw); }
+
+    #status {
+      position: absolute; inset: 0; z-index: 50;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.85); color: #f2f2f2;
+      text-align: center; padding: 24px; box-sizing: border-box;
+    }
+    #status.hidden { display: none; }
+    #status h1 { margin: 0 0 12px; font-size: 1.4rem; font-weight: 600; }
+    #status p { margin: 0; max-width: 420px; line-height: 1.45; opacity: 0.9; }
+    #status code {
+      display: inline-block; margin-top: 14px; padding: 8px 12px;
+      background: #1a1a1a; border-radius: 6px; font-size: 0.85rem;
+    }
+    #status button {
+      margin-top: 18px; padding: 10px 22px; border: 0; border-radius: 8px;
+      background: #00d4ff; color: #041018; font-weight: 600; font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #status button:hover { filter: brightness(1.08); }
+  </style>
+</head>
+<body>
+
+  <video id="v_src" autoplay playsinline muted></video>
+  <canvas id="out"></canvas>
+  <div class="darkness"></div>
+
+  <video id="n" class="fx" src="assets/naruto.mp4" muted autoplay loop playsinline></video>
+  <video id="s" class="fx" src="assets/sasuke.mp4" muted autoplay loop playsinline></video>
+
+  <div id="status">
+    <div>
+      <h1>Starting camera…</h1>
+      <p>Allow camera access when prompted. Open your hand to trigger power effects.</p>
+    </div>
+  </div>
+
+  <script>
+    const vElement = document.getElementById('v_src');
+    const cElement = document.getElementById('out');
+    const ctx = cElement.getContext('2d');
+    const n = document.getElementById('n');
+    const s = document.getElementById('s');
+    const statusEl = document.getElementById('status');
+
+    let pwr = [0, 0];
+    let wasOpen = [false, false];
+    let sending = false;
+
+    function showStatus(title, detail, options = {}) {
+      const { hint = '', retry = false } = options;
+      statusEl.classList.remove('hidden');
+      statusEl.innerHTML = `<div>
+        <h1>${title}</h1>
+        <p>${detail}</p>
+        ${hint ? `<code>${hint}</code>` : ''}
+        ${retry ? '<br><button type="button" id="retry-cam">Try again</button>' : ''}
+      </div>`;
+      const btn = document.getElementById('retry-cam');
+      if (btn) btn.onclick = () => start(true);
+    }
+
+    function hideStatus() {
+      statusEl.classList.add('hidden');
+    }
+
+    function checkOpen(pts) {
+      let count = 0;
+      const wrist = pts[0];
+      const tips = [8, 12, 16, 20];
+      const pips = [6, 10, 14, 18];
+      for (let i = 0; i < tips.length; i++) {
+        const tip = pts[tips[i]];
+        const pip = pts[pips[i]];
+        if (Math.hypot(tip.x - wrist.x, tip.y - wrist.y) > Math.hypot(pip.x - wrist.x, pip.y - wrist.y)) count++;
+      }
+      return count >= 3;
+    }
+
+    function onResults(res) {
+      if (!vElement.videoWidth) return;
+
+      cElement.width = vElement.videoWidth;
+      cElement.height = vElement.videoHeight;
+      ctx.save();
+      ctx.clearRect(0, 0, cElement.width, cElement.height);
+
+      let fL = false;
+      let fR = false;
+
+      n.style.display = 'none';
+      s.style.display = 'none';
+
+      if (res.multiHandLandmarks && res.multiHandedness) {
+        res.multiHandLandmarks.forEach((pts, i) => {
+          const label = res.multiHandedness[i].label;
+          const isR = label === 'Right';
+          const idx = isR ? 1 : 0;
+
+          ctx.save();
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = '#00fbff';
+          drawConnectors(ctx, pts, HAND_CONNECTIONS, { color: '#00d4ff', lineWidth: 3 });
+          drawLandmarks(ctx, pts, { color: '#ffffff', lineWidth: 1, radius: 2 });
+          ctx.restore();
+
+          const open = checkOpen(pts);
+          pwr[idx] += open ? 0.05 : -0.15;
+          pwr[idx] = Math.max(0, Math.min(1, pwr[idx]));
+
+          if (open && !wasOpen[idx]) {
+            const vid = isR ? s : n;
+            vid.currentTime = 0;
+            vid.play().catch(() => {});
+          }
+          wasOpen[idx] = open;
+
+          const wrist = pts[0];
+          const knk = pts[9];
+
+          if (pwr[idx] > 0.01) {
+            if (isR) {
+              fR = true;
+              const tx = (wrist.x + knk.x) / 2;
+              const ty = (wrist.y + knk.y) / 2;
+              s.style.left = `${(1 - tx) * window.innerWidth}px`;
+              s.style.top = `${ty * window.innerHeight}px`;
+              s.style.display = 'block';
+              s.style.opacity = pwr[idx];
+            } else {
+              fL = true;
+              const dx = knk.x - wrist.x;
+              const dy = knk.y - wrist.y;
+              const tx = knk.x + (dx * 0.8);
+              const ty = knk.y + (dy * 0.8);
+              n.style.left = `${(1 - tx) * window.innerWidth}px`;
+              n.style.top = `${(ty * window.innerHeight) - 120}px`;
+              n.style.display = 'block';
+              n.style.opacity = pwr[idx];
+            }
+          }
+        });
+      }
+
+      if (!fL) {
+        pwr[0] = Math.max(0, pwr[0] - 0.15);
+        if (pwr[0] > 0.01) { n.style.display = 'block'; n.style.opacity = pwr[0]; }
+        wasOpen[0] = false;
+      }
+      if (!fR) {
+        pwr[1] = Math.max(0, pwr[1] - 0.15);
+        if (pwr[1] > 0.01) { s.style.display = 'block'; s.style.opacity = pwr[1]; }
+        wasOpen[1] = false;
+      }
+      ctx.restore();
+    }
+
+    function cameraErrorMessage(err) {
+      const name = err && err.name ? err.name : 'Error';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        return ['Camera blocked', 'Allow camera access for this site, then click Try again.'];
+      }
+      if (name === 'NotReadableError' || name === 'TrackStartError') {
+        return [
+          'Camera in use',
+          'Close other tabs/apps using the webcam (Zoom, Teams, Discord, Cursor Simple Browser, another Chrome tab of this page), then click Try again.'
+        ];
+      }
+      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        return ['No camera found', 'Connect a webcam, then click Try again.'];
+      }
+      if (location.protocol === 'file:') {
+        return ['Cannot use camera from a file', 'Open this page through Live Server or a local http URL, not by double-clicking the file.'];
+      }
+      return ['Camera failed', err && err.message ? err.message : String(err)];
+    }
+
+    let hands = null;
+    let camera = null;
+
+    async function start(isRetry = false) {
+      showStatus('Starting camera…', 'Allow camera access when prompted. Open your hand to trigger power effects.');
+
+      if (typeof Hands !== 'function' || typeof Camera !== 'function') {
+        showStatus('MediaPipe failed to load', 'Check your internet connection, then refresh.', { retry: true });
+        return;
+      }
+
+      if (location.protocol === 'file:') {
+        showStatus(
+          'Open via local server',
+          'Double-clicking the HTML file blocks the camera / hand tracker. Use Live Server, or run this in a terminal from the project folder:',
+          { hint: 'python -m http.server 8765' }
+        );
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showStatus('Camera API unavailable', 'Use Chrome or Edge on localhost / https.', { retry: true });
+        return;
+      }
+
+      if (vElement.srcObject) {
+        vElement.srcObject.getTracks().forEach((t) => t.stop());
+        vElement.srcObject = null;
+      }
+      if (camera && typeof camera.stop === 'function') {
+        try { camera.stop(); } catch (_) {}
+        camera = null;
+      }
+
+      if (!hands) {
+        hands = new Hands({
+          locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+        });
+        hands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.6,
+          minTrackingConfidence: 0.6
+        });
+        hands.onResults(onResults);
+      }
+
+      try {
+        camera = new Camera(vElement, {
+          onFrame: async () => {
+            if (sending || !vElement.videoWidth) return;
+            sending = true;
+            try {
+              await hands.send({ image: vElement });
+            } catch (e) {
+              console.error(e);
+            } finally {
+              sending = false;
+            }
+          },
+          width: 1280,
+          height: 720
+        });
+        await camera.start();
+        hideStatus();
+      } catch (err) {
+        console.error(err);
+        const [title, detail] = cameraErrorMessage(err);
+        showStatus(title, detail, { retry: true });
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => start());
+    } else {
+      start();
+    }
+  </script>
+</body>
+</html>
